@@ -1,0 +1,20 @@
+{
+  "name": "hawkins-education",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Hawkins Education — сайт школы, админ-панель и кабинет учителя",
+  "scripts": {
+    "dev": "npm run build && node dev-server.js",
+    "build": "node scripts/vendor.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@vercel/blob": "^2.8.2",
+    "gsap": "^3.12.5",
+    "lenis": "^1.1.13",
+    "three": "^0.160.0"
+  }
+}
