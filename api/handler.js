@@ -53,7 +53,10 @@ function cleanLesson(input, db) {
     room: str(input.room, 40),
     note: str(input.note, 1000),
     status: LESSON_STATUS.includes(input.status) ? input.status : 'planned',
+    studentIds: cleanIds(input.studentIds, db.students),
   };
+  l.kind = ['group', 'individual'].includes(input.kind) ? input.kind : (l.studentIds.length > 1 ? 'group' : 'individual');
+  l.attendance = cleanAttendance(input.attendance, l.studentIds);
   if (!db.teachers.some((t) => t.id === l.teacherId)) fail(400, 'Выберите учителя');
   if (!DATE.test(l.date)) fail(400, 'Неверная дата');
   if (!TIME.test(l.start) || !TIME.test(l.end)) fail(400, 'Неверное время');
@@ -61,6 +64,18 @@ function cleanLesson(input, db) {
   if (!l.title) fail(400, 'Укажите название урока');
   return l;
 }
+
+function cleanIds(ids, list) {
+  const ok = new Set(list.map((x) => x.id));
+  return [...new Set(Array.isArray(ids) ? ids : [])].filter((id) => ok.has(id)).slice(0, 30);
+}
+function cleanAttendance(att, ids) {
+  const out = {};
+  if (att && typeof att === 'object') for (const id of ids) if (att[id] === 'present' || att[id] === 'absent') out[id] = att[id];
+  return out;
+}
+const money = (v) => Math.max(0, Math.round(Number(v) || 0));
+const EXPENSE_CATS = ['salary', 'rent', 'ads', 'tax', 'other'];
 
 function addDays(date, days) {
   const d = new Date(`${date}T00:00:00Z`);
@@ -134,11 +149,16 @@ const routes = {
     if (!user) fail(401, 'Нужно войти');
     const db = await readDb();
     if (user.role === 'admin') {
-      return { user, settings: db.settings, teachers: db.teachers.map(publicTeacher), lessons: db.lessons, leads: db.leads };
+      return { user, settings: db.settings, teachers: db.teachers.map(publicTeacher), lessons: db.lessons, leads: db.leads, students: db.students, payments: db.payments, expenses: db.expenses };
     }
     const me = db.teachers.find((t) => t.id === user.id);
     if (!me) fail(401, 'Учётная запись не найдена');
-    return { user, settings: db.settings, teachers: [publicTeacher(me)], lessons: db.lessons.filter((l) => l.teacherId === me.id), leads: [] };
+    const lessons = db.lessons.filter((l) => l.teacherId === me.id);
+    const sids = new Set(lessons.flatMap((l) => l.studentIds || []));
+    db.students.forEach((st) => { if (st.teacherId === me.id) sids.add(st.id); });
+    const students = db.students.filter((st) => sids.has(st.id)).map(({ id, name, group, subject }) => ({ id, name, group, subject }));
+    const { rateIndividual, rateGroup, ...pubMe } = publicTeacher(me);
+    return { user, settings: { rooms: db.settings.rooms, courses: db.settings.courses }, teachers: [pubMe], lessons, students, leads: [], payments: [], expenses: [] };
   },
 
   // ---------- Админ: учителя ----------
@@ -152,6 +172,7 @@ const routes = {
       const data = {
         name: str(b.name, 80), subject: str(b.subject, 80), login, phone: str(b.phone, 30),
         color: /^#[0-9a-f]{6}$/i.test(b.color) ? b.color : '#8B5CF6', active: b.active !== false,
+        rateIndividual: money(b.rateIndividual), rateGroup: money(b.rateGroup),
       };
       let t = db.teachers.find((x) => x.id === b.id);
       if (t) Object.assign(t, data);
@@ -173,6 +194,7 @@ const routes = {
     if (!db.teachers.some((t) => t.id === id)) fail(404, 'Учитель не найден');
     db.teachers = db.teachers.filter((t) => t.id !== id);
     db.lessons = db.lessons.filter((l) => l.teacherId !== id);
+    db.students.forEach((st) => { if (st.teacherId === id) st.teacherId = ''; });
     return { ok: true };
   }),
 
@@ -190,7 +212,7 @@ const routes = {
           ? db.lessons.filter((l) => l.seriesId === cur.seriesId && l.date >= cur.date) : [cur];
         const shift = Math.round((new Date(`${base.date}T00:00:00Z`) - new Date(`${cur.date}T00:00:00Z`)) / 86400000);
         const ids = new Set(targets.map((t) => t.id));
-        const next = targets.map((t) => ({ ...t, ...base, date: t === cur ? base.date : addDays(t.date, shift), status: t === cur ? base.status : t.status, note: t === cur ? base.note : t.note }));
+        const next = targets.map((t) => ({ ...t, ...base, date: t === cur ? base.date : addDays(t.date, shift), status: t === cur ? base.status : t.status, note: t === cur ? base.note : t.note, attendance: t === cur ? base.attendance : (t.attendance || {}) }));
         const clash = next.flatMap((n) => conflicts(db, n, ids));
         if (clash.length && !force) return { conflict: clash.slice(0, 5) };
         next.forEach((n, i) => Object.assign(targets[i], n));
@@ -244,9 +266,95 @@ const routes = {
     return mutate((db) => {
       if (b.rooms) db.settings.rooms = list(b.rooms);
       if (b.courses) db.settings.courses = list(b.courses);
+      if (Array.isArray(b.tariffs)) {
+        db.settings.tariffs = b.tariffs.slice(0, 50).map((t) => ({
+          id: str(t.id, 40) || uid('tr_'), name: str(t.name, 80) || 'Тариф', type: t.type === 'group' ? 'group' : 'individual',
+          lessons: Math.min(Math.max(parseInt(t.lessons, 10) || 1, 1), 200), price: money(t.price),
+        }));
+      }
+      if ('taxPercent' in b) db.settings.taxPercent = Math.min(Math.max(Number(b.taxPercent) || 0, 0), 50);
+      if ('chargeAbsent' in b) db.settings.chargeAbsent = Boolean(b.chargeAbsent);
       return { settings: db.settings };
     });
   },
+
+  // ---------- Админ: ученики ----------
+  'POST admin/student': async (req, res, user) => {
+    const b = await body(req);
+    return mutate((db) => {
+      const name = str(b.name, 80);
+      if (name.length < 2) fail(400, 'Укажите имя ученика');
+      const data = {
+        name, phone: str(b.phone, 30), parentName: str(b.parentName, 80), parentPhone: str(b.parentPhone, 30),
+        subject: str(b.subject, 80), teacherId: db.teachers.some((t) => t.id === b.teacherId) ? b.teacherId : '',
+        group: str(b.group, 40), tariffId: db.settings.tariffs.some((t) => t.id === b.tariffId) ? b.tariffId : '',
+        note: str(b.note, 1000), active: b.active !== false,
+      };
+      let st = db.students.find((x) => x.id === b.id);
+      if (st) Object.assign(st, data);
+      else { st = { id: uid('st_'), createdAt: new Date().toISOString(), ...data }; db.students.push(st); }
+      return { student: st };
+    });
+  },
+
+  'DELETE admin/student': async (req, res, user, q) => mutate((db) => {
+    const id = q.get('id');
+    if (!db.students.some((s) => s.id === id)) fail(404, 'Ученик не найден');
+    db.students = db.students.filter((s) => s.id !== id);
+    db.payments = db.payments.filter((p) => p.studentId !== id);
+    db.lessons.forEach((l) => {
+      if (l.studentIds?.includes(id)) { l.studentIds = l.studentIds.filter((x) => x !== id); if (l.attendance) delete l.attendance[id]; }
+    });
+    return { ok: true };
+  }),
+
+  // ---------- Админ: оплаты ----------
+  'POST admin/payment': async (req, res, user) => {
+    const b = await body(req);
+    return mutate((db) => {
+      if (!db.students.some((s) => s.id === b.studentId)) fail(400, 'Выберите ученика');
+      const amount = money(b.amount);
+      const lessons = Math.min(Math.max(parseInt(b.lessons, 10) || 0, 0), 500);
+      if (!amount && !lessons) fail(400, 'Укажите сумму и количество занятий');
+      const date = DATE.test(b.date) ? b.date : new Date().toISOString().slice(0, 10);
+      const data = { studentId: b.studentId, amount, lessons, date, tariffId: str(b.tariffId, 40), method: str(b.method, 30), note: str(b.note, 300) };
+      let p = db.payments.find((x) => x.id === b.id);
+      if (p) Object.assign(p, data);
+      else { p = { id: uid('pay_'), createdAt: new Date().toISOString(), ...data }; db.payments.push(p); }
+      const st = db.students.find((s) => s.id === b.studentId);
+      if (data.tariffId && db.settings.tariffs.some((t) => t.id === data.tariffId)) st.tariffId = data.tariffId;
+      return { payment: p };
+    });
+  },
+
+  'DELETE admin/payment': async (req, res, user, q) => mutate((db) => {
+    db.payments = db.payments.filter((p) => p.id !== q.get('id'));
+    return { ok: true };
+  }),
+
+  // ---------- Админ: расходы (аренда, реклама, выплаты учителям) ----------
+  'POST admin/expense': async (req, res, user) => {
+    const b = await body(req);
+    return mutate((db) => {
+      const amount = money(b.amount);
+      if (!amount) fail(400, 'Укажите сумму');
+      const category = EXPENSE_CATS.includes(b.category) ? b.category : 'other';
+      const data = {
+        amount, category, date: DATE.test(b.date) ? b.date : new Date().toISOString().slice(0, 10), note: str(b.note, 300),
+        teacherId: category === 'salary' && db.teachers.some((t) => t.id === b.teacherId) ? b.teacherId : '',
+      };
+      if (category === 'salary' && !data.teacherId) fail(400, 'Выберите учителя');
+      let ex = db.expenses.find((x) => x.id === b.id);
+      if (ex) Object.assign(ex, data);
+      else { ex = { id: uid('ex_'), createdAt: new Date().toISOString(), ...data }; db.expenses.push(ex); }
+      return { expense: ex };
+    });
+  },
+
+  'DELETE admin/expense': async (req, res, user, q) => mutate((db) => {
+    db.expenses = db.expenses.filter((e) => e.id !== q.get('id'));
+    return { ok: true };
+  }),
 
   // ---------- Учитель ----------
   'POST teacher/lesson': async (req, res, user) => {
@@ -256,6 +364,8 @@ const routes = {
       if (!l || (user.role === 'teacher' && l.teacherId !== user.id)) fail(404, 'Урок не найден');
       if (LESSON_STATUS.includes(b.status)) l.status = b.status;
       if ('note' in b) l.note = str(b.note, 1000);
+      if (b.attendance) l.attendance = cleanAttendance(b.attendance, l.studentIds || []);
+      l.markedAt = new Date().toISOString();
       return { lesson: l };
     });
   },
