@@ -123,6 +123,12 @@ const routes = {
 
   'GET me': async (req, res, user) => ({ user }),
 
+  // Проверка, что база доступна (для мониторинга)
+  'GET health': async () => {
+    const db = await readDb();
+    return { ok: true, storage: process.env.BLOB_READ_WRITE_TOKEN ? 'blob' : 'local', updatedAt: db.updatedAt || null };
+  },
+
   // ---------- Данные ----------
   'GET state': async (req, res, user) => {
     if (!user) fail(401, 'Нужно войти');
