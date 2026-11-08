@@ -479,7 +479,7 @@ function viewTeachers() {
         <div class="tcard__top"><span class="avatar avatar--lg" style="--c:${t.color}">${esc(initials(t.name))}</span>
           <div><h3>${esc(t.name)}</h3><p>${esc(t.subject || '—')}</p></div></div>
         <dl class="tcard__stats"><div><dt>На неделе</dt><dd>${ls.length} ур.</dd></div><div><dt>Учеников</dt><dd>${S.students.filter((st) => st.teacherId === t.id && st.active !== false).length}</dd></div><div><dt>Логин</dt><dd class="mono">${esc(t.login)}</dd></div></dl>
-        <p class="tcard__next">${icon('coins')}Ставка ${money(t.rateIndividual || 0)} / ${money(t.rateGroup || 0)} (инд./группа) · за ${monthName(todayIso().slice(0, 7))}: <b>${money(payroll(t, todayIso().slice(0, 7)).earned)}</b></p>
+        <p class="tcard__next">${icon('coins')}${pctOf(t)}% от оплаты ученика · за ${monthName(todayIso().slice(0, 7))}: <b>${money(payroll(t, todayIso().slice(0, 7)).earned)}</b></p>
         <p class="tcard__next">${icon('clock')}${next ? `Следующий: ${human(next.date)}, ${next.start} · ${esc(next.title)}` : 'Нет ближайших уроков'}</p>
         <div class="tcard__actions">
           <button class="btn btn--ghost btn--sm" data-sched="${t.id}">${icon('cal')}<span>Расписание</span></button>
@@ -506,8 +506,7 @@ function teacherModal(t = {}) {
         <label class="field"><span>Телефон</span><input name="phone" type="tel" value="${esc(t.phone || '')}" placeholder="+7 …"></label>
         <label class="field"><span>Логин для входа</span><input name="login" value="${esc(t.login || '')}" required autocapitalize="none" spellcheck="false" placeholder="aigerim"></label>
         <label class="field span2"><span>${isNew ? 'PIN / пароль для входа' : 'Новый PIN / пароль (оставьте пустым, чтобы не менять)'}</span><input name="pin" type="text" autocomplete="new-password" ${isNew ? 'required' : ''} minlength="4" placeholder="минимум 4 символа"></label>
-        <label class="field"><span>Ставка за индивидуальный урок, ₸</span><input name="rateIndividual" type="number" min="0" step="100" inputmode="numeric" value="${esc(t.rateIndividual ?? 2000)}"></label>
-        <label class="field"><span>Ставка за групповой урок, ₸</span><input name="rateGroup" type="number" min="0" step="100" inputmode="numeric" value="${esc(t.rateGroup ?? 5000)}"></label>
+        <label class="field span2"><span>Доля учителя от оплаты ученика, % (пусто — общая ставка ${esc(S.settings.teacherPercent ?? 50)}%). Учитель этого не видит.</span><input name="percent" type="number" min="0" max="100" step="1" inputmode="numeric" value="${esc(t.percent ?? '')}" placeholder="${esc(S.settings.teacherPercent ?? 50)}"></label>
         <fieldset class="field span2"><span>Цвет в расписании</span><div class="swatches">${PALETTE.map((c) => `<label><input type="radio" name="color" value="${c}" ${c.toLowerCase() === color.toLowerCase() ? 'checked' : ''}><i style="background:${c}"></i></label>`).join('')}</div></fieldset>
         ${isNew ? '' : `<label class="check span2"><input type="checkbox" name="active" ${t.active !== false ? 'checked' : ''}> Активен (может входить, показывается в расписании)</label>`}
       </div>
@@ -632,6 +631,7 @@ function viewSettings() {
           <button type="button" class="icon-btn" data-rmtr="${i}" aria-label="Удалить тариф">${icon('trash')}</button>
         </div>`).join('')}</div>
         <div class="form-grid mt">
+          <label class="field"><span>Доля учителя, % от оплаты ученика</span><input name="teacherPercent" type="number" min="0" max="100" step="1" value="${esc(S.settings.teacherPercent ?? 50)}"></label>
           <label class="field"><span>Налог, % от поступлений</span><input name="taxPercent" type="number" min="0" max="50" step="0.5" value="${esc(S.settings.taxPercent || 0)}"></label>
           <label class="check"><input type="checkbox" name="chargeAbsent" ${S.settings.chargeAbsent ? 'checked' : ''}> Списывать урок, если ученик пропустил</label>
         </div>
@@ -655,7 +655,7 @@ function viewSettings() {
   const readTariffs = () => $$('.trow2').map((r) => ({ id: r.querySelector('[name=id]').value, name: r.querySelector('[name=name]').value, type: r.querySelector('[name=type]').value, lessons: +r.querySelector('[name=lessons]').value, price: +r.querySelector('[name=price]').value }));
   const saveTariffs = async (tariffs) => {
     const f = $('#trf');
-    try { await api('admin/settings', { method: 'POST', body: { tariffs, taxPercent: +f.taxPercent.value, chargeAbsent: f.chargeAbsent.checked } }); await load(); viewSettings(); toast('Тарифы сохранены'); } catch (x) { toast(x.message, 'err'); }
+    try { await api('admin/settings', { method: 'POST', body: { tariffs, taxPercent: +f.taxPercent.value, teacherPercent: +f.teacherPercent.value, chargeAbsent: f.chargeAbsent.checked } }); await load(); viewSettings(); toast('Тарифы сохранены'); } catch (x) { toast(x.message, 'err'); }
   };
   $('#trf').onsubmit = (e) => { e.preventDefault(); saveTariffs(readTariffs()); };
   $('#addTr').onclick = () => saveTariffs([...readTariffs(), { name: 'Новый тариф', type: 'individual', lessons: 8, price: 0 }]);
@@ -813,12 +813,25 @@ const STATUS_TXT = { ok: 'Оплачено', soon: 'Скоро оплата', ze
 const STATUS_TAG = { ok: 'enrolled', soon: 'trial', zero: 'new', debt: 'lost-red', off: 'lost' };
 const dueCount = () => S.students.filter((st) => st.active !== false && ['soon', 'zero', 'debt'].includes(studentStats(st).status)).length;
 
+// Доля учителя: личная ставка или общая из настроек
+const pctOf = (t) => (t.percent ?? S.settings.teacherPercent ?? 50);
+// Цена одного урока ученика на дату: по последней оплате до этой даты, иначе по тарифу
+function priceAt(st, date) {
+  const pays = S.payments.filter((p) => p.studentId === st.id && +p.lessons > 0).sort((a, b) => a.date.localeCompare(b.date));
+  const p = [...pays].reverse().find((x) => x.date <= date) || pays[0];
+  if (p) return p.amount / p.lessons;
+  const tr = tariffById(st.tariffId);
+  return tr ? tr.price / tr.lessons : 0;
+}
 // Зарплата учителя за месяц
 function payroll(t, ym) {
   const ls = S.lessons.filter((l) => l.teacherId === t.id && l.status === 'done' && l.date.startsWith(ym));
   const ind = ls.filter((l) => lessonKind(l) === 'individual').length;
   const grp = ls.length - ind;
-  const earned = ind * (t.rateIndividual || 0) + grp * (t.rateGroup || 0);
+  const pct = pctOf(t) / 100;
+  let earned = 0;
+  for (const l of ls) for (const sid of l.studentIds || []) if (charged(l, sid)) { const st = studentById(sid); if (st) earned += priceAt(st, l.date) * pct; }
+  earned = Math.round(earned);
   const paidOut = S.expenses.filter((e) => e.category === 'salary' && e.teacherId === t.id && e.date.startsWith(ym)).reduce((s, e) => s + e.amount, 0);
   return { ind, grp, earned, paidOut, owed: Math.max(0, earned - paidOut) };
 }
@@ -1111,7 +1124,7 @@ function viewFinance() {
             <span>${ind} инд. + ${grp} гр.</span><span>${money(earned)}</span><span>${money(paidOut)}</span><span class="${owed ? 'bad' : 'good'}">${money(owed)}</span>
             <span>${owed ? `<button class="btn btn--ghost btn--sm" data-paysal="${t.id}" data-amt="${owed}">Выплатить</button>` : '<span class="tag tag--enrolled">Оплачено</span>'}</span></div>`).join('')}
         </div>
-        <p class="muted small">Ставки учителей меняются в разделе «Учителя». Начисление идёт автоматически, когда урок отмечен «Проведён».</p>
+        <p class="muted small">Учитель получает ${esc(S.settings.teacherPercent ?? 50)}% от стоимости урока каждого пришедшего ученика (цена урока = оплата ÷ количество уроков). Начисляется автоматически, когда урок отмечен «Проведён». Учителя эти суммы не видят.</p>
       </section>
       <section class="panel">
         <div class="panel__head"><h2>Ожидаемые оплаты</h2><b>${money(dueSum)}</b></div>

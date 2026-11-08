@@ -157,7 +157,7 @@ const routes = {
     const sids = new Set(lessons.flatMap((l) => l.studentIds || []));
     db.students.forEach((st) => { if (st.teacherId === me.id) sids.add(st.id); });
     const students = db.students.filter((st) => sids.has(st.id)).map(({ id, name, group, subject }) => ({ id, name, group, subject }));
-    const { rateIndividual, rateGroup, ...pubMe } = publicTeacher(me);
+    const { rateIndividual, rateGroup, percent, ...pubMe } = publicTeacher(me); // финансы учителю не показываем
     return { user, settings: { rooms: db.settings.rooms, courses: db.settings.courses }, teachers: [pubMe], lessons, students, leads: [], payments: [], expenses: [] };
   },
 
@@ -172,7 +172,7 @@ const routes = {
       const data = {
         name: str(b.name, 80), subject: str(b.subject, 80), login, phone: str(b.phone, 30),
         color: /^#[0-9a-f]{6}$/i.test(b.color) ? b.color : '#8B5CF6', active: b.active !== false,
-        rateIndividual: money(b.rateIndividual), rateGroup: money(b.rateGroup),
+        percent: b.percent === '' || b.percent == null ? null : Math.min(Math.max(Number(b.percent) || 0, 0), 100),
       };
       let t = db.teachers.find((x) => x.id === b.id);
       if (t) Object.assign(t, data);
@@ -274,6 +274,7 @@ const routes = {
       }
       if ('taxPercent' in b) db.settings.taxPercent = Math.min(Math.max(Number(b.taxPercent) || 0, 0), 50);
       if ('chargeAbsent' in b) db.settings.chargeAbsent = Boolean(b.chargeAbsent);
+      if ('teacherPercent' in b) db.settings.teacherPercent = Math.min(Math.max(Number(b.teacherPercent) || 0, 0), 100);
       return { settings: db.settings };
     });
   },
