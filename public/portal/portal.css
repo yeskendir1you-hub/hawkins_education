@@ -517,6 +517,11 @@ a.hrow:hover, button.hrow:hover { background: rgba(255,255,255,.05); }
   .hrow { grid-template-columns: auto 56px 1fr; }
   div.hrow { grid-template-columns: 56px 1fr auto auto; }
 }
+.btn--wa { color: #25d366; border-color: rgba(37,211,102,.35); }
+.btn--wa:hover { background: rgba(37,211,102,.1); }
+.btn--wa-solid { background: #25d366; color: #04210f; }
+.btn--wa-solid:hover { box-shadow: 0 8px 26px -8px rgba(37,211,102,.8); }
+.access-text { margin: 16px 0 0; padding: 14px 16px; border-radius: 12px; background: rgba(0,0,0,.35); border: 1px solid var(--line); font: 500 13px/1.6 var(--mono); color: var(--muted); white-space: pre-wrap; word-break: break-word; }
 button.link { background: none; border: 0; padding: 0; cursor: pointer; font: inherit; font-weight: 700; font-size: 13px; }
 .scope input, .check input, .att__row input, .pchip input, .swatches input { width: auto; min-height: 0; padding: 0; }
 .scope { gap: 8px; }

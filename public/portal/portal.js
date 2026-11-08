@@ -482,6 +482,7 @@ function viewTeachers() {
         <p class="tcard__next">${icon('coins')}${pctOf(t)}% от оплаты ученика · за ${monthName(todayIso().slice(0, 7))}: <b>${money(payroll(t, todayIso().slice(0, 7)).earned)}</b></p>
         <p class="tcard__next">${icon('clock')}${next ? `Следующий: ${human(next.date)}, ${next.start} · ${esc(next.title)}` : 'Нет ближайших уроков'}</p>
         <div class="tcard__actions">
+          <button class="btn btn--ghost btn--sm btn--wa" data-access="${t.id}">${icon('chat')}<span>Вход в WhatsApp</span></button>
           <button class="btn btn--ghost btn--sm" data-sched="${t.id}">${icon('cal')}<span>Расписание</span></button>
           <button class="btn btn--ghost btn--sm" data-edit="${t.id}">${icon('edit')}<span>Изменить</span></button>
           ${t.phone ? `<a class="icon-btn" href="tel:${esc(t.phone.replace(/[^\d+]/g, ''))}" aria-label="Позвонить">${icon('phone')}</a>` : ''}
@@ -490,6 +491,7 @@ function viewTeachers() {
     }).join('') || empty('Пока нет учителей. Добавьте первого.')}</div>`);
   $('#addT').onclick = () => teacherModal();
   $$('[data-edit]').forEach((b) => b.onclick = () => teacherModal(teacherById(b.dataset.edit)));
+  $$('[data-access]').forEach((b) => b.onclick = () => accessModal(teacherById(b.dataset.access)));
   $$('[data-sched]').forEach((b) => b.onclick = () => { S.filter = b.dataset.sched; S.view = innerWidth < 760 ? 'list' : 'week'; location.hash = '#/schedule'; });
 }
 
@@ -524,9 +526,10 @@ function teacherModal(t = {}) {
       const fd = Object.fromEntries(new FormData(f));
       const err = $('.form-error', p);
       try {
-        await api('admin/teacher', { method: 'POST', body: { ...fd, id: t.id, active: isNew ? true : f.active.checked } });
+        const r = await api('admin/teacher', { method: 'POST', body: { ...fd, id: t.id, active: isNew ? true : f.active.checked } });
         await load(); close(); route();
-        toast(isNew ? `Учитель добавлен. Логин: ${fd.login}` : 'Сохранено');
+        if (fd.pin) accessModal(r.teacher, fd.pin);
+        else toast('Сохранено');
       } catch (x) { err.textContent = x.message; }
     });
     $('#del', p)?.addEventListener('click', async () => {
@@ -1176,6 +1179,72 @@ function expenseModal(ex = {}) {
       e.preventDefault();
       const fd = Object.fromEntries(new FormData(f));
       try { await api('admin/expense', { method: 'POST', body: { ...fd, id: ex.id } }); await load(); close(); route(); toast('Сохранено'); } catch (x) { $('.form-error', p).textContent = x.message; }
+    });
+  });
+}
+
+// ---------- Отправка логина и пароля учителю в WhatsApp ----------
+const waNumber = (v) => {
+  let d = String(v || '').replace(/\D/g, '');
+  if (d.length === 11 && d.startsWith('8')) d = `7${d.slice(1)}`;
+  if (d.length === 10) d = `7${d}`;
+  return d.length === 11 ? d : '';
+};
+const randomPin = () => String(Math.floor(1000 + Math.random() * 9000));
+function accessText(t, pin) {
+  return `Здравствуйте, ${t.name.split(' ')[0]}! Ваш доступ в кабинет учителя Hawkins Education:\n\nСсылка: ${location.origin}/portal\nЛогин: ${t.login}\nПароль: ${pin}\n\nПосле урока нажмите «Провёл» и отметьте, кто пришёл. Пароль можно сменить в разделе «Профиль».`;
+}
+function accessModal(t, pin) {
+  if (!t) return;
+  const fresh = Boolean(pin);
+  modal(`<form id="acf">
+    <div class="modal__head"><h2>Доступ для учителя</h2><button type="button" class="icon-btn" data-close aria-label="Закрыть">${icon('x')}</button></div>
+    <p class="muted">${fresh ? `Готово! Отправьте ${esc(t.name.split(' ')[0])} данные для входа.` : 'Пароль хранится зашифрованным, поэтому старый показать нельзя. Задайте новый — он заменит старый — и отправьте учителю.'}</p>
+    <div class="form-grid">
+      <label class="field"><span>WhatsApp учителя</span><input name="phone" type="tel" value="${esc(t.phone || '')}" placeholder="8 705 000 00 00"></label>
+      <label class="field"><span>${fresh ? 'Пароль' : 'Новый пароль'}</span><input name="pin" value="${esc(pin || randomPin())}" ${fresh ? 'readonly' : ''} minlength="4" autocomplete="off"></label>
+    </div>
+    <pre class="access-text" id="acText"></pre>
+    <p class="form-error" role="alert"></p>
+    <div class="modal__foot">
+      <button type="button" class="btn btn--ghost" id="acCopy">Скопировать</button>
+      <span class="grow"></span>
+      <button class="btn btn--wa-solid" type="submit">${icon('chat')}<span>Отправить в WhatsApp</span></button>
+    </div>
+  </form>`, (p, close) => {
+    const f = $('#acf', p);
+    const text = () => accessText(t, f.pin.value.trim());
+    const render = () => { $('#acText', p).textContent = text(); };
+    f.pin.addEventListener('input', render); render();
+    let saved = fresh;
+    const savePin = async () => {
+      if (saved) return;
+      const v = f.pin.value.trim();
+      if (v.length < 4) throw new Error('Пароль — минимум 4 символа');
+      const { pinHash, ...rest } = t;
+      await api('admin/teacher', { method: 'POST', body: { ...rest, pin: v, phone: f.phone.value || t.phone || '' } });
+      saved = true; f.pin.readOnly = true;
+      await load();
+    };
+    $('#acCopy', p).onclick = async () => {
+      try { await savePin(); await navigator.clipboard.writeText(text()); toast('Скопировано — вставьте в любой мессенджер'); } catch (x) { $('.form-error', p).textContent = x.message || 'Не удалось скопировать'; }
+    };
+    f.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      // окно открываем сразу (иначе телефон заблокирует всплывающее окно), адрес подставляем после сохранения
+      const win = window.open('', '_blank');
+      try {
+        await savePin();
+        const num = waNumber(f.phone.value);
+        if (num && num !== waNumber(t.phone)) {
+          const { pinHash, ...rest } = t;
+          await api('admin/teacher', { method: 'POST', body: { ...rest, phone: f.phone.value } }).catch(() => {});
+          await load();
+        }
+        const url = `https://wa.me/${num}?text=${encodeURIComponent(text())}`;
+        if (win) win.location.href = url; else location.href = url;
+        close(); route(); toast('Открываю WhatsApp…');
+      } catch (x) { win?.close(); $('.form-error', p).textContent = x.message; }
     });
   });
 }
